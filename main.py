@@ -1,3 +1,4 @@
+
 """
 🚀 Nexus Extractor - PRO TELEGRAM BOT (MULTI-ADMIN & AUTO-EXPORT)
 """
@@ -11,7 +12,6 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 # ================= Configuration =================
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
 
-# پشتیبانی از چند ادمین: آیدی‌ها را با کاما جدا کنید (مثال: 123456,7891011)
 admin_ids_env = os.environ.get("ADMIN_IDS", "123456789")
 ADMIN_IDS = [int(x.strip()) for x in admin_ids_env.split(",") if x.strip().isdigit()]
 
@@ -28,7 +28,6 @@ logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.INFO)
 
 # ================= Helper Functions =================
 async def send_links_file(bot, chat_id):
-    """تابع کمکی برای تولید و ارسال فایل لینک‌ها"""
     records = await db.hgetall("jet:bulk_accounts")
     if not records:
         await bot.send_message(chat_id=chat_id, text="❌ هیچ لینکی در سیستم موجود نیست.")
@@ -103,7 +102,6 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif query.data == "adm_clear_db_confirm":
-        # پاکسازی تمام جداول مرتبط
         await db.delete("jet:processed_phones")
         await db.delete("jet:bulk_accounts")
         keys = await db.keys("jet_session:*")
@@ -116,7 +114,6 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= Background Workers =================
 async def alert_listener(app: Application):
-    """شنود لاگ‌ها و ارسال به ادمین‌ها + ارسال خودکار لینک در پایان کار"""
     while True:
         try:
             alert = await db.lpop("bot:admin_alerts")
@@ -124,19 +121,41 @@ async def alert_listener(app: Application):
                 for admin_id in ADMIN_IDS:
                     try:
                         await app.bot.send_message(chat_id=admin_id, text=alert, parse_mode="Markdown")
-                        
-                        # تشخیص پایان کار و ارسال خودکار فایل لینک‌ها
                         if "گزارش نهایی" in alert:
                             await app.bot.send_message(chat_id=admin_id, text="⏳ در حال آماده‌سازی خودکار فایل لینک‌ها...")
                             await send_links_file(app.bot, admin_id)
-                    except Exception as e:
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        await asyncio.sleep(2)
+
+async def file_listener(app: Application):
+    """شنود فایل‌های متنی ارسال شده (مثل فایل دیباگ و لاگ درخواست‌ها)"""
+    while True:
+        try:
+            file_data_str = await db.lpop("bot:admin_files")
+            if file_data_str:
+                file_data = json.loads(file_data_str)
+                file_bytes = BytesIO(file_data["content"].encode('utf-8'))
+                file_bytes.name = file_data["filename"]
+                
+                for admin_id in ADMIN_IDS:
+                    try:
+                        file_bytes.seek(0)
+                        await app.bot.send_document(
+                            chat_id=admin_id, 
+                            document=file_bytes, 
+                            caption="📄 **فایل گزارش کامل عملیات (شامل لاگ درخواست‌ها و ارورها)**",
+                            parse_mode="Markdown"
+                        )
+                    except Exception:
                         pass
         except Exception:
             pass
         await asyncio.sleep(2)
 
 async def token_generator_worker():
-    """تولید توکن و لینک در سرور ابری (کاملاً ایزوله از سیستم محلی)"""
     while True:
         try:
             raw_data = await db.lpop("bot:new_accounts")
@@ -197,8 +216,8 @@ async def main():
     webhook_endpoint = f"{WEBHOOK_URL}/webhook/{TOKEN}"
     await bot_app.bot.set_webhook(url=webhook_endpoint)
     
-    # اجرای همزمان فرآیندهای پس‌زمینه
     asyncio.create_task(alert_listener(bot_app))
+    asyncio.create_task(file_listener(bot_app))
     asyncio.create_task(token_generator_worker())
     
     runner = web.AppRunner(web_app)

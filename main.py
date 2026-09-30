@@ -1,4 +1,3 @@
-
 """
 🚀 Nexus Extractor - PRO TELEGRAM BOT (MULTI-ADMIN & AUTO-EXPORT)
 """
@@ -27,21 +26,38 @@ db = aioredis.from_url(REDIS_URL, decode_responses=True)
 logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.INFO)
 
 # ================= Helper Functions =================
-async def send_links_file(bot, chat_id):
-    records = await db.hgetall("jet:bulk_accounts")
+async def send_links_files(bot, chat_id, db_key="jet:bulk_accounts", prefix_name="Links"):
+    records = await db.hgetall(db_key)
     if not records:
-        await bot.send_message(chat_id=chat_id, text="❌ هیچ لینکی در سیستم موجود نیست.")
+        await bot.send_message(chat_id=chat_id, text=f"❌ هیچ دیتایی در بخش {prefix_name} موجود نیست.")
         return
         
-    text_content = "🔗 لیست تمام اکانت‌های استخراج شده:\n\n"
+    links_only = ""
+    links_with_phone = ""
+    
+    counter = 1
     for phone, val in records.items():
         data = json.loads(val)
         link = f"{WEBHOOK_URL}/auth/{data['token']}"
-        text_content += f"📱 شماره: {phone}\n👤 نام: {data['name']}\n🔗 لینک: {link}\n──────────────────\n"
         
-    file_bytes = BytesIO(text_content.encode('utf-8'))
-    file_bytes.name = f"Nexus_Links_{datetime.now().strftime('%Y%m%d')}.txt"
-    await bot.send_document(chat_id=chat_id, document=file_bytes, caption=f"✅ لیست {len(records)} لینک ورود آماده شد.")
+        # فایل اول: فقط لینک‌های شماره‌‌گذاری شده و تمیز
+        links_only += f"{counter}. {link}\n"
+        
+        # فایل دوم: شماره موبایل به همراه لینک
+        orders_info = f" (🛒 {data.get('total_orders')} خرید)" if 'total_orders' in data else ""
+        links_with_phone += f"📱 {phone}{orders_info} -> {link}\n"
+        
+        counter += 1
+        
+    # ساخت فایل اول
+    b1 = BytesIO(links_only.encode('utf-8'))
+    b1.name = f"Nexus_{prefix_name}_Numbered_{datetime.now().strftime('%Y%m%d')}.txt"
+    await bot.send_document(chat_id=chat_id, document=b1, caption=f"✅ لیست {len(records)} لینک خام.")
+    
+    # ساخت فایل دوم
+    b2 = BytesIO(links_with_phone.encode('utf-8'))
+    b2.name = f"Nexus_{prefix_name}_WithPhone_{datetime.now().strftime('%Y%m%d')}.txt"
+    await bot.send_document(chat_id=chat_id, document=b2, caption=f"📱 فایل نگاشت شماره به لینک‌ها.")
 
 # ================= Telegram Handlers =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -52,9 +68,11 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS: return
     
     keyboard = [
-        [InlineKeyboardButton("▶️ شروع پردازش همزمان", callback_data="adm_start_bulk")],
-        [InlineKeyboardButton("🔗 دریافت فایل تمام لینک‌ها", callback_data="adm_export_links")],
-        [InlineKeyboardButton("📦 خروجی دیتابیس JSON", callback_data="adm_export_all")],
+        [InlineKeyboardButton("▶️ شروع استخراج", callback_data="adm_start_bulk"),
+         InlineKeyboardButton("🔎 شروع چکر خرید", callback_data="adm_start_checker")],
+        [InlineKeyboardButton("🔗 دریافت کل لینک‌ها (بررسی نشده)", callback_data="adm_export_bulk")],
+        [InlineKeyboardButton("🛒 دریافت اکانت‌های خریددار", callback_data="adm_export_ordered")],
+        [InlineKeyboardButton("⚪ دریافت اکانت‌های خام", callback_data="adm_export_clean")],
         [InlineKeyboardButton("⚠️ پاکسازی کل دیتابیس", callback_data="adm_clear_db_warn")]
     ]
     text = "⚙️ **پنل اتوماسیون مرکزی:**\n\nتولید لینک‌ها به صورت ایزوله در این سرور انجام می‌شود."
@@ -70,24 +88,25 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "adm_start_bulk":
         await db.rpush("bot:admin_commands", "START_BULK")
-        await query.message.reply_text("🚀 عملیات پردازش آغاز شد. گزارشات به زودی ارسال می‌شوند...", parse_mode="Markdown")
-
-    elif query.data == "adm_export_links":
-        msg = await query.message.reply_text("⏳ در حال ساخت فایل لینک‌ها...")
-        await send_links_file(context.bot, query.message.chat.id)
-        await msg.delete()
-
-    elif query.data == "adm_export_all":
-        msg = await query.message.reply_text("⏳ در حال خروجی JSON...")
-        keys = await db.keys("jet_session:*")
-        all_accounts = {}
-        for k in keys:
-            data = await db.get(k)
-            if data: all_accounts[k] = json.loads(data)
+        await query.message.reply_text("🚀 عملیات استخراج آغاز شد. گزارشات به زودی ارسال می‌شوند...", parse_mode="Markdown")
         
-        file_bytes = BytesIO(json.dumps(all_accounts, ensure_ascii=False, indent=2).encode('utf-8'))
-        file_bytes.name = f"Nexus_Database_{datetime.now().strftime('%Y%m%d')}.json"
-        await context.bot.send_document(chat_id=query.message.chat.id, document=file_bytes)
+    elif query.data == "adm_start_checker":
+        await db.rpush("bot:admin_commands", "START_CHECKER")
+        await query.message.reply_text("🔎 عملیات بررسی سابقه خرید آغاز شد...", parse_mode="Markdown")
+
+    elif query.data == "adm_export_bulk":
+        msg = await query.message.reply_text("⏳ در حال ساخت فایل لینک‌های بررسی نشده...")
+        await send_links_files(context.bot, query.message.chat.id, "jet:bulk_accounts", "Bulk")
+        await msg.delete()
+        
+    elif query.data == "adm_export_ordered":
+        msg = await query.message.reply_text("⏳ در حال ساخت فایل اکانت‌های خریددار...")
+        await send_links_files(context.bot, query.message.chat.id, "jet:ordered_accounts", "Ordered")
+        await msg.delete()
+        
+    elif query.data == "adm_export_clean":
+        msg = await query.message.reply_text("⏳ در حال ساخت فایل اکانت‌های خام...")
+        await send_links_files(context.bot, query.message.chat.id, "jet:clean_accounts", "Clean")
         await msg.delete()
 
     elif query.data == "adm_clear_db_warn":
@@ -96,7 +115,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("❌ انصراف", callback_data="adm_cancel_action")]
         ]
         await query.message.reply_text(
-            "⚠️ **هشدار امنیتی!**\nآیا از پاکسازی کل دیتابیس اطمینان دارید؟\nاین عملیات تمام لینک‌ها، نشست‌ها و حافظه خطوط استخراج شده را به صورت کامل و غیرقابل بازگشت پاک می‌کند.", 
+            "⚠️ **هشدار امنیتی!**\nآیا از پاکسازی کل دیتابیس اطمینان دارید؟\nتمام جداول از جمله استخراج شده‌ها، خریدارها و خام‌ها پاک خواهند شد.", 
             reply_markup=InlineKeyboardMarkup(warn_keyboard), 
             parse_mode="Markdown"
         )
@@ -104,6 +123,8 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "adm_clear_db_confirm":
         await db.delete("jet:processed_phones")
         await db.delete("jet:bulk_accounts")
+        await db.delete("jet:ordered_accounts")
+        await db.delete("jet:clean_accounts")
         keys = await db.keys("jet_session:*")
         if keys:
             await db.delete(*keys)
@@ -121,9 +142,8 @@ async def alert_listener(app: Application):
                 for admin_id in ADMIN_IDS:
                     try:
                         await app.bot.send_message(chat_id=admin_id, text=alert, parse_mode="Markdown")
-                        if "گزارش نهایی" in alert:
-                            await app.bot.send_message(chat_id=admin_id, text="⏳ در حال آماده‌سازی خودکار فایل لینک‌ها...")
-                            await send_links_file(app.bot, admin_id)
+                        if "گزارش نهایی چکر" in alert:
+                            await app.bot.send_message(chat_id=admin_id, text="✅ می‌توانید از منوی اصلی، فایل اکانت‌های تفکیک شده را دریافت کنید.")
                     except Exception:
                         pass
         except Exception:
@@ -131,7 +151,6 @@ async def alert_listener(app: Application):
         await asyncio.sleep(2)
 
 async def file_listener(app: Application):
-    """شنود فایل‌های متنی ارسال شده (مثل فایل دیباگ و لاگ درخواست‌ها)"""
     while True:
         try:
             file_data_str = await db.lpop("bot:admin_files")
@@ -146,7 +165,7 @@ async def file_listener(app: Application):
                         await app.bot.send_document(
                             chat_id=admin_id, 
                             document=file_bytes, 
-                            caption="📄 **فایل گزارش کامل عملیات (شامل لاگ درخواست‌ها و ارورها)**",
+                            caption="📄 **فایل لاگ درخواست‌ها**",
                             parse_mode="Markdown"
                         )
                     except Exception:
